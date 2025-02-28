@@ -1,38 +1,90 @@
----
-- name: Clone the repository
-  become: true
-  git:
-    repo: "https://github.com/noxxspring/DevOps-Stage-4.git"
-    dest: /home/ubuntu/todo-app
-    version: main
-    force: yes
-- name: Ensure letsencrypt directory exists
-  file:
-    path: /home/ubuntu/todo-app/letsencrypt
-    state: directory
-    mode: '0755'
-    owner: ubuntu
-    group: ubuntu    
+provider "aws" {
+  region = var.aws_region
+}
 
-- name: Set correct permissions for acme.json
-  become: true
-  file:
-    path: /home/ubuntu/todo-app/letsencrypt/acme.json
-    state: touch
-    mode: '0600'
+data "aws_vpc" "default" {
+  default = true
+}
 
-- name: setup ssl cert
-  become: true
-  shell: |
-    curl "https://www.duckdns.org/update?domains=noxxmicroservice.duckdns.org&token=a17f50f8-58fe-42b7-96be-2b75171f98b8&ip={{ ansible_host }}"
-    
-- name: Create docker network
-  become: true
-  shell: |
-    docker network create app-network
+resource "aws_security_group" "todo_sg" {
+  name        = "todo_sg"
+  description = "Security group for TODO app"
+  vpc_id      = data.aws_vpc.default.id
 
-- name: Run Docker Compose
-  become: true
-  command:
-    cmd: docker compose up -d
-    chdir: /home/ubuntu/todo-app
+  tags = {
+    Name = "todo_sg"
+  }
+}
+
+resource "aws_instance" "app_server" {
+  ami           = var.ami_id
+  instance_type = var.instance_type
+  security_groups = [aws_security_group.todo_sg.name]
+  key_name      = var.key_name
+
+  tags = {
+    Name = "TodoAppServer"
+  }
+
+  provisioner "local-exec" {
+    command = <<EOT
+      echo "[servers]" > ansible/inventory
+      echo "app_server ansible_host=${self.public_ip} ansible_user=ubuntu ansible_ssh_private_key_file=~/.ssh/appserver.pem ansible_ssh_common_args='-o StrictHostKeyChecking=no'" >> ansible/inventory
+    EOT
+  }
+}
+
+resource "aws_security_group_rule" "allow_ssh" {
+  type              = "ingress"
+  security_group_id = aws_security_group.todo_sg.id
+  from_port         = 22
+  to_port           = 22
+  protocol          = "tcp"
+  cidr_blocks       = var.cidr_blocks
+}
+
+resource "aws_security_group_rule" "allow_http" {
+  type              = "ingress"
+  security_group_id = aws_security_group.todo_sg.id
+  from_port         = 80
+  to_port           = 80
+  protocol          = "tcp"
+  cidr_blocks       = var.cidr_blocks
+}
+
+resource "aws_security_group_rule" "allow_https" {
+  type              = "ingress"
+  security_group_id = aws_security_group.todo_sg.id
+  from_port         = 443
+  to_port           = 443
+  protocol          = "tcp"
+  cidr_blocks       = var.cidr_blocks
+}
+
+resource "aws_security_group_rule" "allow_all_outbound" {
+  type              = "egress"
+  from_port         = 0
+  to_port           = 0
+  protocol          = "-1"
+  cidr_blocks       = var.cidr_blocks
+  security_group_id = aws_security_group.todo_sg.id
+}
+
+resource "null_resource" "wait_for_ssh" {
+  depends_on = [aws_instance.app_server]
+
+  provisioner "local-exec" {
+    command = <<EOT
+      echo "Waiting for SSH to be ready..."
+      sleep 30
+    EOT
+  }
+}
+
+resource "null_resource" "configure_server" {
+  depends_on = [null_resource.wait_for_ssh]
+
+  provisioner "local-exec" {
+    command = "ansible-playbook -i ansible/inventory ansible/playbook.yml"
+  }
+}
