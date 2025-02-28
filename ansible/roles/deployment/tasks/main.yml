@@ -6,13 +6,6 @@
     dest: /home/ubuntu/todo-app
     version: main
     force: yes
-- name: Ensure letsencrypt directory exists
-  file:
-    path: /home/ubuntu/todo-app/letsencrypt
-    state: directory
-    mode: '0755'
-    owner: ubuntu
-    group: ubuntu    
 
 - name: Set correct permissions for acme.json
   become: true
